@@ -47,11 +47,13 @@ RUN test -n "${ZIG_SHA256}" || { echo "ZIG_SHA256 build arg is required" >&2; ex
 FROM toolchain AS codecs
 ARG JPEG_TURBO_VERSION=3.1.4.1
 ARG JPEG_TURBO_SHA256=ecae8008e2cc9ade2f2c1bb9d5e6d4fb73e7c433866a056bd82980741571a022
+ARG JPEG_URL=https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/${JPEG_TURBO_VERSION}/libjpeg-turbo-${JPEG_TURBO_VERSION}.tar.gz
 ARG WEBP_VERSION=1.6.0
 ARG WEBP_SHA256=e4ab7009bf0629fd11982d4c2aa83964cf244cffba7347ecd39019a9e38c4564
+ARG WEBP_URL=https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-${WEBP_VERSION}.tar.gz
 WORKDIR /build
 RUN curl -fsSL --retry 3 -o jpeg.tar.gz \
-      "https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/${JPEG_TURBO_VERSION}/libjpeg-turbo-${JPEG_TURBO_VERSION}.tar.gz" \
+      "${JPEG_URL}" \
  && echo "${JPEG_TURBO_SHA256}  jpeg.tar.gz" | sha256sum -c - \
  && mkdir jpeg && tar -xzf jpeg.tar.gz -C jpeg --strip-components=1 \
  && cmake -S jpeg -B jpeg/out -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/codecs -DCMAKE_INSTALL_LIBDIR=lib \
@@ -60,7 +62,7 @@ RUN curl -fsSL --retry 3 -o jpeg.tar.gz \
  && install -D -m 0755 "$(readlink -f jpeg/out/libturbojpeg.so.0)" /codecs/lib/libturbojpeg.so.0 \
  && install -D -m 0644 jpeg/LICENSE.md /codecs/LICENSES/libjpeg-turbo-LICENSE.md
 RUN curl -fsSL --retry 3 -o webp.tar.gz \
-      "https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-${WEBP_VERSION}.tar.gz" \
+      "${WEBP_URL}" \
  && echo "${WEBP_SHA256}  webp.tar.gz" | sha256sum -c - \
  && mkdir webp && tar -xzf webp.tar.gz -C webp --strip-components=1 \
  && cmake -S webp -B webp/out -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
@@ -78,7 +80,11 @@ FROM toolchain AS build
 ARG XGRAMMAR_REPO=https://github.com/mlc-ai/xgrammar.git
 ARG XGRAMMAR_TAG=v0.2.8
 ARG XGRAMMAR_COMMIT=97787376faee5ed8466cfad57c99855e4ce2f6aa
-RUN git clone -q --depth 1 --branch "${XGRAMMAR_TAG}" --recurse-submodules "${XGRAMMAR_REPO}" /src/xgrammar \
+ARG XGRAMMAR_URL=
+RUN if [ -n "${XGRAMMAR_URL}" ]; then \
+      curl -fsSL --retry 3 -o /tmp/xg.tar.gz "${XGRAMMAR_URL}" \
+   && mkdir -p /src/xgrammar && tar -xzf /tmp/xg.tar.gz -C /src/xgrammar --strip-components=1 --no-same-owner; \
+    else git clone -q --depth 1 --branch "${XGRAMMAR_TAG}" --recurse-submodules "${XGRAMMAR_REPO}" /src/xgrammar; fi \
  && test "$(git -C /src/xgrammar rev-parse HEAD)" = "${XGRAMMAR_COMMIT}" \
  && test "$(git -C /src/xgrammar describe --tags --exact-match)" = "${XGRAMMAR_TAG}"
 
