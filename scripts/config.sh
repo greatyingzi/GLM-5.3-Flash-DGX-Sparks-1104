@@ -226,6 +226,10 @@ else PROMPT_CACHE_GIB="${PROMPT_CACHE_GIB:-5}"; fi
 # with CACHE_FIRST=1. With a value here, start.sh reads each rank's startup line and stops both ranks (E_CACHE) before
 # LIVE when one funds less. Empty (default): no check.
 PROMPT_CACHE_MIN_GIB="${PROMPT_CACHE_MIN_GIB:-}"
+# TF_ROWS_STAGING_GIB: the disk learn staging buffer a rank holds between write steps.
+# The engine default 1 GiB fits a ~170k-token state; a 400k one is ~2.5 GiB and is
+# skipped with StagingFull without this. Empty: the engine default.
+ROWS_STAGING_GIB="${ROWS_STAGING_GIB:-}"
 # TF_GLM_HOST_CACHE_GIB, the kept prompt states' pinned host tier. On a discrete card that memory is free; on GB10 it
 # is the very memory the KV pool and the weights draw on, and a state in it costs a copy to restore, so the tier is off
 # here and PROMPT_CACHE_GIB (device pages) is the one to raise. Unset or auto would pin a quarter of MemAvailable,
@@ -236,6 +240,9 @@ HOST_CACHE_GIB="${HOST_CACHE_GIB:-0}"
 # restarts. The GiB of disk the states may take; 0 (default): off, as before. LEARN_MIN_FREE_GIB: no state is
 # written while the disk has less free.
 LEARN_GIB="${LEARN_GIB:-0}"
+# --learn-daily-gib: bytes the learn store may write a day (engine default 32 GiB). A 400k state
+# is ~2.5 GiB, and a restart rewrites what the day has already lost, so 32 GiB is reached fast.
+LEARN_DAILY_GIB="${LEARN_DAILY_GIB:-}"
 LEARN_MIN_FREE_GIB="${LEARN_MIN_FREE_GIB:-15}"
 # KV_SHARD=1 (engine patch 0114, TF_GLM_KV_SHARD): each stream's FP8 latent rows live on one Spark (its owner) instead
 # of both, so the same memory holds about twice the tokens; the other Spark's queries go to the owner for attention
