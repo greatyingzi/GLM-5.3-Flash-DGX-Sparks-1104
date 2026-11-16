@@ -1,5 +1,5 @@
 diff --git a/zig/src/core/lane_host.zig b/zig/src/core/lane_host.zig
-index 5ca02b9..fce9906 100644
+index 5ca02b9..6594a39 100644
 --- a/zig/src/core/lane_host.zig
 +++ b/zig/src/core/lane_host.zig
 @@ -428,7 +428,7 @@ pub const LaneHost = struct {
@@ -7,7 +7,7 @@ index 5ca02b9..fce9906 100644
          job.reported();
          if (h.cache) |store| {
 -            store.report(job.request.prompt.len, job.stream.cached, store.counts.kept - job.kept0);
-+            store.reportConv(job.request.prompt.len, job.stream.cached, store.counts.kept - job.kept0, Store.convOf(job.request.prompt));
++            store.reportConv(job.request.prompt.len, job.stream.cached, store.counts.kept - job.kept0, @TypeOf(store.*).convOf(job.request.prompt));
              if (job.request.images.len == 0 and job.request.cache_key.len == 0) store.repeat_log.note(store.gpa, store.rules.repeat_min, job.request.prompt);
          }
          emit(job, .{ .prefilled = job.stream.cached });
