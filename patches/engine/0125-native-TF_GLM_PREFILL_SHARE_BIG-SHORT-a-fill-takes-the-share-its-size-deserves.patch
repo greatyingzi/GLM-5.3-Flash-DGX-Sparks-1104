@@ -1,0 +1,100 @@
+diff --git a/zig/src/core/lane_host_fill.zig b/zig/src/core/lane_host_fill.zig
+index f286c85..1b94475 100644
+--- a/zig/src/core/lane_host_fill.zig
++++ b/zig/src/core/lane_host_fill.zig
+@@ -60,8 +60,8 @@ pub const Share = struct {
+     base: f64 = 1, // TENSORFOLD_PREFILL_SHARE: the share no band claims
+     big: f64 = 0, // TENSORFOLD_PREFILL_SHARE_BIG: a fill of big_rows or more left takes it (0: none)
+     big_rows: u64 = 65536,
+-    short: f64 = 0, // TENSORFOLD_PREFILL_SHARE_SHORT: a fill under short_rows left takes it (0: none)
+-    short_rows: u64 = 4096,
++    small: f64 = 0, // TENSORFOLD_PREFILL_SHARE_SHORT: a fill under small_rows left takes it (0: none)
++    small_rows: u64 = 4096,
+     debt_ns: i64 = 0, // decode time owed before the next step of a long prompt
+     rows: u64 = 0, // prompt rows a visit fills beside decoders before their round (TENSORFOLD_PREFILL_BUDGET; 0: none)
+ 
+@@ -76,9 +76,9 @@ pub const Share = struct {
+         // TF_GLM_PREFILL_BIG_ROWS left, TF_GLM_PREFILL_SHARE_SHORT under TF_GLM_PREFILL_SHORT_ROWS. Unset (0) leaves
+         // the one share for every fill, which is the behaviour without them.
+         if (std.c.getenv("TF_GLM_PREFILL_SHARE_BIG")) |text| s.big = fromBand(std.mem.span(text));
+-        if (std.c.getenv("TF_GLM_PREFILL_SHARE_SHORT")) |text| s.short = fromBand(std.mem.span(text));
++        if (std.c.getenv("TF_GLM_PREFILL_SHARE_SHORT")) |text| s.small = fromBand(std.mem.span(text));
+         if (std.c.getenv("TF_GLM_PREFILL_BIG_ROWS")) |text| s.big_rows = orDefault(budget(std.mem.span(text)), s.big_rows);
+-        if (std.c.getenv("TF_GLM_PREFILL_SHORT_ROWS")) |text| s.short_rows = orDefault(budget(std.mem.span(text)), s.short_rows);
++        if (std.c.getenv("TF_GLM_PREFILL_SHORT_ROWS")) |text| s.small_rows = orDefault(budget(std.mem.span(text)), s.small_rows);
+         return s;
+     }
+ 
+@@ -92,20 +92,34 @@ pub const Share = struct {
+         return if (v > 0) v else otherwise;
+     }
+ 
+-    /// The share a fill with `left` rows to go takes. A big fill takes more of the wall so it ends sooner; a small
+-    /// one less, so the decoders beside it keep their rate for the few seconds it costs them.
++    /// The share a fill with that many rows to go takes, from the agent loop rather than from a guess.
++    ///
++    /// A prompt step beside decoders buys the fill 1/p times its own wall time and pays for it with the decoders'
++    /// rate. What that rate is worth is not the tokens it makes: it is how soon a stream reaches the stop that ends
++    /// its request and gives the card back. So the cost is the fill's wall time plus the time every stream in the
++    /// batch needs to reach its own stop:
++    ///
++    ///     J(p) = C/p + m (n + 1) / (n rate(p)),    rate(p) = min(solo, b + k (1 - p))
++    ///
++    /// with C = rows / 4760 s the fill's own work, m the output tokens a turn runs before it stops (387 measured
++    /// here over 216 requests), n the streams decoding beside it, and rate what one of them sees. dJ/dp = 0 gives
++    ///
++    ///     p = (b + k) / (sqrt(m (n + 1) k / (n C)) + k)
++    ///
++    /// the curve below with this pair's measured b = 7.4, k = 120, solo = 50 tok/s, n = 4, m = 387, i.e. rows of
++    /// G = sqrt(2.76e8 / rows). Below p = 1 - (solo - b) / k = 0.645 a decoder is at its solo rate already, so a
++    /// lower share spends the fill's time and buys nothing: that is s.small, the floor. s.big is the ceiling
++    /// (0.95 leaves them 13 tok/s).
+     pub fn retune(s: *Share, left: u64) void {
+-        s.p = if (s.big > 0 and left >= s.big_rows)
+-            s.big
+-        else if (s.short > 0 and left < s.short_rows)
+-            s.short
+-        else
+-            s.base;
++        if (s.fixed()) return;
++        const rows = @max(left, 1);
++        const g = std.math.sqrt(2.76318e8 / @as(f64, @floatFromInt(rows)));
++        s.p = std.math.clamp(127.4 / (g + 120.0), s.small, s.big);
+     }
+ 
+     /// No band is set: the share is the one number, whatever the fill's size.
+     pub fn fixed(s: *const Share) bool {
+-        return s.big == 0 and s.short == 0;
++        return s.big == 0 and s.small == 0;
+     }
+ 
+     /// A share from its text: anything but a number in [min_share, 1] is the default, 1.
+@@ -243,16 +257,19 @@ test "a share of 0.5 owes the decoders a step's time; 1 owes nothing; rounds pay
+ }
+ 
+ test "dynamic share: a big fill takes more of the wall, a small one less, no band leaves the one share" {
+-    var s: Share = .{ .p = 0.84, .base = 0.84, .big = 0.94, .big_rows = 65536, .short = 0.6, .short_rows = 4096 };
++    var s: Share = .{ .p = 0.84, .base = 0.84, .big = 0.94, .big_rows = 65536, .small = 0.6, .small_rows = 4096 };
+     try std.testing.expect(!s.fixed());
+-    s.retune(65535);
+-    try std.testing.expectEqual(@as(f64, 0.84), s.p);
+-    s.retune(65536);
+-    try std.testing.expectEqual(@as(f64, 0.94), s.p);
+-    s.retune(4095);
+-    try std.testing.expectEqual(@as(f64, 0.6), s.p);
+-    s.retune(4096);
+-    try std.testing.expectEqual(@as(f64, 0.84), s.p);
++    var r: Share = .{ .big = 0.95, .small = 0.645 };
++    r.retune(1000);
++    try std.testing.expectEqual(@as(f64, 0.645), r.p); // the floor: a decoder is at solo rate already
++    r.retune(40000);
++    try std.testing.expect(r.p > 0.61 and r.p < 0.66);
++    r.retune(100000);
++    try std.testing.expect(r.p > 0.72 and r.p < 0.76);
++    r.retune(500000);
++    try std.testing.expect(r.p > 0.86 and r.p < 0.91);
++    r.retune(2000000);
++    try std.testing.expectEqual(@as(f64, 0.95), r.p); // the ceiling
+     var plain: Share = .{ .p = 0.7, .base = 0.7 };
+     try std.testing.expect(plain.fixed());
+     plain.retune(10);
