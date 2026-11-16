@@ -1,0 +1,114 @@
+diff --git a/zig/src/core/prompt_cache.zig b/zig/src/core/prompt_cache.zig
+index 98ba3d8..ddeb548 100644
+--- a/zig/src/core/prompt_cache.zig
++++ b/zig/src/core/prompt_cache.zig
+@@ -116,6 +116,7 @@ pub const Entry = struct {
+     bytes: u64,
+     born: u32, // the prompt length of the request that kept it (a reply's end and its warm pass: that reply's): a later turn's is longer
+     used: u64, // the store's clock at its last keep or resume
++    used_s: u64 = 0, // the wall clock (REALTIME seconds) at that keep or resume: TF_PROMPT_CACHE_TTL_S reads it
+     last: []u32, // the last prompt that kept or resumed it
+     shared: bool = false, // kept at a shared system block's cut: other conversations resume it, so its own never supersedes it
+     branched: bool = false, // resumed again after a later prompt kept a longer state extending it: never superseded
+@@ -145,6 +146,7 @@ pub const Store = struct {
+     most: usize = std.math.maxInt(usize), // states kept at most: a family's snapshot slots, one a state
+     held: u64 = 0,
+     clock: u64 = 0,
++    ttl_s: u64 = 0, // TF_PROMPT_CACHE_TTL_S: a state idle this long is freed (0: no limit, as before)
+     entries: std.ArrayList(*Entry) = .empty,
+     by_position: std.ArrayList(*Entry) = .empty, // nonowning, longest first; equal positions retain insertion order
+     counts: Counts = .{},
+@@ -160,7 +162,15 @@ pub const Store = struct {
+     const SHARED_KEYS = 64;
+ 
+     pub fn init(gpa: Allocator, family: Snapshots, rules: Rules, budget: u64) Store {
+-        return .{ .gpa = gpa, .family = family, .rules = rules, .budget = budget };
++        return .{ .gpa = gpa, .family = family, .rules = rules, .budget = budget, .ttl_s = ttlFromEnv() };
++    }
++
++    /// TF_PROMPT_CACHE_TTL_S: seconds a state may sit unused before it is freed. 0 or unset: no limit, which is
++    /// how the store behaved before (a 557k state holds 4.1 GiB until budget pressure evicts it).
++    fn ttlFromEnv() u64 {
++        const raw = std.c.getenv("TF_PROMPT_CACHE_TTL_S") orelse return 0;
++        const t = std.mem.trim(u8, std.mem.span(raw), " ");
++        return std.fmt.parseInt(u64, t, 10) catch 0;
+     }
+ 
+     pub fn deinit(s: *Store) void {
+@@ -185,6 +195,8 @@ pub const Store = struct {
+ 
+     pub fn remove(s: *Store, i: usize) void {
+         std.debug.assert(s.entries.items[i].borrowers == 0);
++        const gone = s.entries.items[i];
++        if (policy.trace()) note("evicting {d} tokens, {d} MiB of {d} MiB held (used {d})", .{ gone.at, gone.bytes >> 20, s.held >> 20, gone.used });
+         index.remove(s, s.entries.items[i]);
+         const e = s.entries.orderedRemove(i);
+         policy.unlink(s, e);
+@@ -403,6 +415,7 @@ pub const Store = struct {
+         }
+         s.clock += 1;
+         e.used = s.clock;
++        e.used_s = nowS();
+         e.branched = e.branched or s.extended(e); // a turn several continuations share (a re-sent, edited or forked one)
+         s.counts.hits += 1;
+         const last = s.gpa.dupe(u32, prompt) catch return;
+@@ -468,6 +481,7 @@ pub const Store = struct {
+         const shared = std.mem.indexOfScalar(u64, s.shared_keys.items, sharedKey(prompt[0..n])) != null;
+         for (s.entries.items) |e| if (!e.expired and e.at == at and std.mem.eql(u32, e.tokens, prompt[0..n]) and modes.equal(e.decode_spans, spans, at)) {
+             e.used = s.clock; // the same state again: no copy
++            e.used_s = nowS();
+             e.shared = e.shared or shared;
+             if (shared) learned.learn(s, e, starts);
+             return true;
+@@ -504,7 +518,7 @@ pub const Store = struct {
+             return s.fail(at, err);
+         };
+         const charged = if (s.family.vtable.charged) |f| f(s.family.ptr, saved) else bytes;
+-        e.* = .{ .tokens = last[0..n], .decode_spans = decoded, .at = at, .saved = saved, .bytes = charged, .born = born, .used = s.clock, .last = last, .shared = shared, .own = last };
++        e.* = .{ .tokens = last[0..n], .decode_spans = decoded, .at = at, .saved = saved, .bytes = charged, .born = born, .used = s.clock, .used_s = nowS(), .last = last, .shared = shared, .own = last };
+         owns_decoded = false;
+         index.add(s, e) catch {
+             s.free(e);
+@@ -534,7 +548,7 @@ pub const Store = struct {
+         }
+         if (bytes > s.budget) return have;
+         const e = s.gpa.create(Entry) catch return have;
+-        e.* = .{ .tokens = &.{}, .at = m.at, .saved = undefined, .bytes = bytes, .born = born, .used = s.clock, .last = &.{}, .shared = true };
++        e.* = .{ .tokens = &.{}, .at = m.at, .saved = undefined, .bytes = bytes, .born = born, .used = s.clock, .used_s = nowS(), .last = &.{}, .shared = true };
+         e.tokens = s.gpa.dupe(u32, m.tokens) catch return s.drop(e, have, false);
+         e.last = s.gpa.dupe(u32, prompt) catch return s.drop(e, have, false);
+         const key = m.key;
+@@ -578,6 +592,13 @@ pub const Store = struct {
+     const extended = policy.extended;
+ };
+ 
++/// The wall clock in seconds: what TF_PROMPT_CACHE_TTL_S measures idleness against.
++pub fn nowS() u64 {
++    var t: std.c.timespec = undefined;
++    if (std.c.clock_gettime(std.c.CLOCK.REALTIME, &t) != 0 or t.sec < 0) return 0;
++    return @as(u64, @intCast(t.sec));
++}
++
+ /// A line on the engine's log; tests stay quiet (the build runner fails a test that writes to stderr).
+ pub fn note(comptime fmt: []const u8, args: anytype) void {
+     if (@import("builtin").is_test) return;
+diff --git a/zig/src/core/prompt_cache_lifetime.zig b/zig/src/core/prompt_cache_lifetime.zig
+index e7a6a38e..cec037d 100644
+--- a/zig/src/core/prompt_cache_lifetime.zig
++++ b/zig/src/core/prompt_cache_lifetime.zig
+@@ -12,9 +12,15 @@ pub fn expired(s: *pc.Store, saved: pc.Saved) void {
+ 
+ /// Reclaim invalid entries between backend operations, keeping every outstanding lookup alive.
+ pub fn collect(s: *pc.Store) void {
++    const now = if (s.ttl_s > 0) pc.nowS() else 0;
+     var i: usize = 0;
+     while (i < s.entries.items.len) {
+         const e = s.entries.items[i];
++        // TF_PROMPT_CACHE_TTL_S: a state nobody resumed for this long goes, whatever room is left. A long
++        // conversation that was put down holds GiB the live ones need, and LRU only frees it under pressure.
++        if (!e.expired and s.ttl_s > 0 and e.used_s > 0 and now > e.used_s and now - e.used_s > s.ttl_s) {
++            e.expired = true;
++        }
+         if (e.expired and e.borrowers == 0) s.remove(i) else i += 1;
+     }
+ }

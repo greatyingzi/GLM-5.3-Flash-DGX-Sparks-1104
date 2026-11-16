@@ -169,9 +169,6 @@ build_serve_args() {
   [[ "$LEARN_GIB" == 0 ]] || SERVE_ARGS+=(--learn-conversations --learn-dir /state/learn --learn-gib "$LEARN_GIB"
     --learn-min-free-gib "$LEARN_MIN_FREE_GIB")
   [[ -z "${LEARN_DAILY_GIB:-}" ]] || SERVE_ARGS+=(--learn-daily-gib "$LEARN_DAILY_GIB")
-  # 0126: a state shorter than LEARN_MIN_TOKENS is never written -- a 16k one saves ~13 s and spends the
-  # budget a 500k one (750 s) needs. Env, not a flag: rows_store reads it where the store opens.
-  [[ -z "${LEARN_MIN_TOKENS:-}" ]] || ENV_ARGS+=(-e "TF_LEARN_MIN_TOKENS=$LEARN_MIN_TOKENS")
   read -r -a extra <<< "$SERVE_EXTRA_ARGS"
   SERVE_ARGS+=("${extra[@]}")
 }
@@ -183,7 +180,7 @@ WORKER_ENV_FILE=''
 MANAGED_ENV=' HOME HF_HUB_OFFLINE CUDA_DEVICE_ORDER CUDA_VISIBLE_DEVICES TENSORFOLD_NO_UPDATE_CHECK TENSORFOLD_NO_LIVE
  TENSORFOLD_MEMORY_RESERVE_GIB TF_GLM_DENSE_BITS TF_GLM_HEAD_BITS TF_GLM_CLEAR_THINKING TF_GLM_RANK TF_GLM_WORLD TF_CUDA_DEVICE
  TF_KV_PAGES TF_GLM_CE_EXCHANGE TF_GLM_ABSORB_MMA TF_GLM_W8A8 TF_GLM_HOST_CACHE_GIB TENSORFOLD_PREFILL_SHARE TENSORFOLD_PREFILL_BUDGET TF_PROMPT_CACHE_FIRST TF_GLM_KV_SHARD TF_GLM_L2PF TF_ROWS_STAGING_GIB TF_EXTRA_EOS TF_THINK_OFF_SPLIT
- TF_ROCE TF_ROCE_MAX_KB TF_ROCE_HCA TF_BIN TF_REPO TF_REF TENSORFOLD_PROMPT_CACHE_KEEP_OTHERS TF_GLM_PREFILL_SHARE_BIG TF_GLM_PREFILL_SHARE_SHORT
+ TF_ROCE TF_ROCE_MAX_KB TF_ROCE_HCA TF_BIN TF_REPO TF_REF TENSORFOLD_PROMPT_CACHE_KEEP_OTHERS TF_GLM_PREFILL_SHARE_BIG TF_GLM_PREFILL_SHARE_SHORT TF_LEARN_MIN_TOKENS
 
     TENSORFOLD_PROMPT_CACHE_TRACE
  NCCL_COMM_ID NCCL_SOCKET_IFNAME NCCL_IB_HCA NCCL_IB_GID_INDEX NCCL_MIN_NCHANNELS NCCL_MAX_NCHANNELS '
@@ -212,6 +209,10 @@ build_env_args() {
   [[ "${PROMPT_CACHE_KEEP_OTHERS:-0}" != 1 ]] || ENV_ARGS+=(-e "TENSORFOLD_PROMPT_CACHE_KEEP_OTHERS=1")
   # 0124: name every state an eviction gives up, so a refill's cause is on the log.
   [[ -z "${PROMPT_CACHE_TRACE:-}" ]] || ENV_ARGS+=(-e "TENSORFOLD_PROMPT_CACHE_TRACE=$PROMPT_CACHE_TRACE")
+  # 0126: never write a state shorter than LEARN_MIN_TOKENS. Env, not a flag: rows_store reads it when it opens.
+  [[ -z "${LEARN_MIN_TOKENS:-}" ]] || ENV_ARGS+=(-e "TF_LEARN_MIN_TOKENS=$LEARN_MIN_TOKENS")
+  # 0127: a kept state nobody resumed for PROMPT_CACHE_TTL_S seconds is freed, whatever room is left.
+  [[ -z "${PROMPT_CACHE_TTL_S:-}" ]] || ENV_ARGS+=(-e "TF_PROMPT_CACHE_TTL_S=$PROMPT_CACHE_TTL_S")
   # 0125: the share a fill of this size deserves (a big refill ends sooner, a small one costs decoders less).
   [[ -z "${PREFILL_SHARE_BIG:-}" ]] || ENV_ARGS+=(-e "TF_GLM_PREFILL_SHARE_BIG=$PREFILL_SHARE_BIG")
   [[ -z "${PREFILL_SHARE_SHORT:-}" ]] || ENV_ARGS+=(-e "TF_GLM_PREFILL_SHARE_SHORT=$PREFILL_SHARE_SHORT")

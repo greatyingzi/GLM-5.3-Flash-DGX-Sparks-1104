@@ -42,6 +42,10 @@ HOST_CACHE_GIB=0              # the pinned host prompt tier is the same memory a
 # LEARN_DAILY_GIB=256          # 0113: bytes a day. 64 GiB is ~15 long states, i.e. one restart's rewrite
 # LEARN_MIN_TOKENS=65536       # 0126: never write a state shorter than this. 16k tokens is ~130 MiB and ~13 s of
 #                              #       refill; 500k is 4 GiB and 750 s. Small ones were spending the budget
+# PROMPT_CACHE_TTL_S=7200      # 0127: a kept state nobody resumed for this long is freed even with room to spare.
+#                              #       The store has no other sense of age, so a conversation put down at 500k keeps
+#                              #       4.1 GiB of the 24 GiB cache until pressure evicts it -- i.e. until it pushes a
+#                              #       live one out. Two hours covers a lunch break; 0 keeps the old behaviour
 #                              # 0125 fits the curve to the agent loop: p = 127.4 / (sqrt(6.966e7 / rows) + 120),
 #                              # with 6.966e7 = m (n + 1) k R / n from m = 387 output tokens a turn, n = 4 streams,
 #                              # k = 120, R = 1,200 prompt tok/s. Fills of 40k rows take 0.79, 100k 0.87, 300k+ 0.95

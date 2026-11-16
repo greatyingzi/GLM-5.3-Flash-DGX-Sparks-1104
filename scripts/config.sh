@@ -247,6 +247,10 @@ LEARN_DAILY_GIB="${LEARN_DAILY_GIB:-}"
 # A 16k-token state costs ~130 MiB and saves ~13 s of refill; a 500k one costs 4 GiB and saves 750 s. Empty or 0:
 # every state is written, as before.
 LEARN_MIN_TOKENS="${LEARN_MIN_TOKENS:-}"
+# TF_PROMPT_CACHE_TTL_S (engine patch 0127): seconds a kept prompt state may sit unused before it is freed. The
+# store has no other sense of age: a 557k-token conversation that was put down holds 4.1 GiB until budget pressure
+# evicts it. Empty or 0: no limit, as before.
+PROMPT_CACHE_TTL_S="${PROMPT_CACHE_TTL_S:-}"
 LEARN_MIN_FREE_GIB="${LEARN_MIN_FREE_GIB:-15}"
 # KV_SHARD=1 (engine patch 0114, TF_GLM_KV_SHARD): each stream's FP8 latent rows live on one Spark (its owner) instead
 # of both, so the same memory holds about twice the tokens; the other Spark's queries go to the owner for attention
