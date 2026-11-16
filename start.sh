@@ -401,7 +401,7 @@ launch() {
   done
   [[ -z "$WORKER_ENV_FILE" ]] || worker_env+=(--env-file "$WORKER_ENV_FILE")
   wcmd=(docker run -d --name "$CONTAINER_NAME" --label tf.recipe=glm53-spark --label "tf.patches=$PATCHES_HASH" "${LOG_OPTS[@]}"
-    --memory=112g --memory-swap=112g --init --restart=no "${RUN_ARGS[@]}" "${worker_user_args[@]}" "${worker_env[@]}" "${RANK_ENV[@]}"
+    --init --restart=no "${RUN_ARGS[@]}" "${worker_user_args[@]}" "${worker_env[@]}" "${RANK_ENV[@]}"
     "${WORKER_MOUNTS[@]}" -v "$WORKER_CACHE_DIR:/state")
   [[ -z "$TEMPLATE_FILE" ]] || wcmd+=(-v "$WORKER_TEMPLATE:/templates/chat_template.jinja:ro")
   wcmd+=(--entrypoint "$TF_BIN" "$IMAGE" serve /model "${SERVE_ARGS[@]}")
@@ -419,12 +419,12 @@ launch() {
   [[ "$DRAFTER" != dflash2 ]] || mounts+=(-v "$DFLASH2_DIR:/dflash2:ro")
   [[ -z "$TEMPLATE_FILE" ]] || mounts+=(-v "$TEMPLATE_FILE:/templates/chat_template.jinja:ro")
   mounts+=(-v "$CACHE_DIR:/state")
-  # --memory: the engine dies inside its own cgroup instead of driving the host to zero free memory.
-  # 2026-11-16 17:55: engine (95 GiB) + a build with no cap took the host to ~0 available; the kernel's direct
-  # reclaim stalled fork(), so sshd accepted connections and never sent a banner on any of the three paths.
-  # 112 GiB of 121 leaves ~9 GiB for sshd, earlyoom and the page cache, and is above the engine's steady state.
+  # No --memory cap on purpose. Tried 112 GiB on 2026-11-16: the engine sizes its cache and KV pool from what it
+  # sees, so the cap shrank the pool 8.62 -> 2.72 GiB (5,106 -> 1,608 pages) and the prompt cache 24 -> 20.8 GiB,
+  # which costs far more concurrency than the host protection is worth. The host is protected by min_free_kbytes=4
+  # GiB, earlyoom on the compilers, and the memguard floor instead.
   cmd=(docker run -d --name "$CONTAINER_NAME" --label tf.recipe=glm53-spark --label "tf.patches=$PATCHES_HASH" "${LOG_OPTS[@]}"
-    --memory=112g --memory-swap=112g --init --restart=no "${RUN_ARGS[@]}" "${user_args[@]}" "${ENV_ARGS[@]}" "${RANK_ENV[@]}" "${mounts[@]}"
+    --init --restart=no "${RUN_ARGS[@]}" "${user_args[@]}" "${ENV_ARGS[@]}" "${RANK_ENV[@]}" "${mounts[@]}"
     --entrypoint "$TF_BIN" "$IMAGE" serve /model "${SERVE_ARGS[@]}")
   if [[ "$DRY_RUN" == 1 ]]; then log 'Here:'; plan "${cmd[@]}"; return 0; fi
   "${cmd[@]}" >/dev/null || { stop_both; fail E_START 'Docker could not launch rank 0. Check its error and rerun.'; }
