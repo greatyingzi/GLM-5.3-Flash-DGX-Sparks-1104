@@ -169,6 +169,12 @@ build_serve_args() {
   [[ "$LEARN_GIB" == 0 ]] || SERVE_ARGS+=(--learn-conversations --learn-dir /state/learn --learn-gib "$LEARN_GIB"
     --learn-min-free-gib "$LEARN_MIN_FREE_GIB")
   [[ -z "${LEARN_DAILY_GIB:-}" ]] || SERVE_ARGS+=(--learn-daily-gib "$LEARN_DAILY_GIB")
+  # SPILL_GIB: when a state leaves the device cache, write it then -- not on every keep.
+  # Without this flag the store is write-through (.off: "every keep written behind"): a 500k conversation wrote
+  # ~600 MiB per turn, 96 GiB/day was spent before the day ended, every later save was refused with
+  # DailyBudgetSpent, and the states that were refused came back as 193 s refills that starved every other
+  # stream. With --learn it selects .finish: evictions and close, and the write completes before the entry goes.
+  [[ -z "${SPILL_GIB:-}" ]] || SERVE_ARGS+=(--spill-gib "$SPILL_GIB")
   read -r -a extra <<< "$SERVE_EXTRA_ARGS"
   SERVE_ARGS+=("${extra[@]}")
 }

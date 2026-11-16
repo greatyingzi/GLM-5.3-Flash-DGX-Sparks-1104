@@ -42,6 +42,10 @@ HOST_CACHE_GIB=0              # the pinned host prompt tier is the same memory a
 # LEARN_DAILY_GIB=256          # 0113: bytes a day. 64 GiB is ~15 long states, i.e. one restart's rewrite
 # LEARN_MIN_TOKENS=65536       # 0126: never write a state shorter than this. 16k tokens is ~130 MiB and ~13 s of
 #                              #       refill; 500k is 4 GiB and 750 s. Small ones were spending the budget
+# SPILL_GIB=300                # engine --spill-gib beside --learn-conversations: write-back instead of
+#                              #       write-through. Without it every kept state is written as it is kept, which
+#                              #       costs a 500k conversation ~600 MiB a turn; with it the state is written when
+#                              #       it is evicted (and at close), and the write finishes before the entry goes
 # PROMPT_CACHE_TTL_S=43200     # 0127: a kept state nobody resumed for this long leaves the device cache -- it is
 #                              #       staged to the disk learn first, so a next-day turn reads it back in seconds
 #                              #       rather than refilling 750 s. 12 h leaves the device tier to the conversations

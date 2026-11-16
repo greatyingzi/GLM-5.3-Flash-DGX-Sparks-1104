@@ -252,6 +252,11 @@ LEARN_MIN_TOKENS="${LEARN_MIN_TOKENS:-}"
 # evicts it. Empty or 0: no limit, as before.
 PROMPT_CACHE_TTL_S="${PROMPT_CACHE_TTL_S:-}"
 LEARN_MIN_FREE_GIB="${LEARN_MIN_FREE_GIB:-15}"
+# SPILL_GIB (engine --spill-gib, beside --learn-conversations): switch the state store from write-through to
+# write-back. Unset/0 keeps the engine's default, which writes every kept state to disk as it is kept: a 500k
+# conversation then writes ~600 MiB a turn and burns the daily budget in hours. Set to the same GiB as LEARN_GIB
+# so the store has one cap; states are written when they are evicted (and at close), not before.
+SPILL_GIB="${SPILL_GIB:-}"
 # KV_SHARD=1 (engine patch 0114, TF_GLM_KV_SHARD): each stream's FP8 latent rows live on one Spark (its owner) instead
 # of both, so the same memory holds about twice the tokens; the other Spark's queries go to the owner for attention
 # (1-4% decode). Needs KV=fp8, KV pages, DFlash2 or no drafter, PARALLEL above 1. The pool then takes most of the
