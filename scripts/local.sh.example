@@ -31,9 +31,10 @@ HOST_CACHE_GIB=0              # the pinned host prompt tier is the same memory a
 # PROMPT_CACHE_GIB=5          # device pages for kept prompt states, set aside first (CACHE_FIRST=1, the default)
 # PROMPT_CACHE_TRACE=1         # 0124: log every prompt state an eviction gives up (position, MiB, held MiB)
 # PREFILL_SHARE=0.84           # 0125: the share of wall time a prompt step takes beside decoding streams
-# PREFILL_SHARE_SHORT=0.645    # 0125: the floor -- the curve clamps here. It is provisional: the decoders cannot
-#                              #       beat their own aggregate (81 tok/s at 4 streams, 95 at 8, 44 at 1) and the
-#                              #       linear law only fits 0.68..1, so the logs are what will place it
+# PREFILL_SHARE_SHORT=0.84     # 0125: the floor, and it is measured: two windows of real traffic say a lower
+#                              #       share spends the fill's time and buys the decoders nothing (docs/glm-v2.md
+#                              #       section 14: TTFT +20..100%, throughput flat, per-stream rate -6..-10%).
+#                              #       At 0.84 the curve can only give a fill more, never less
 # PREFILL_SHARE_BIG=0.95       # 0125: the ceiling, so a cold 500k fill never starves the batch outright
 #                              # 0125 fits the curve to the agent loop: p = 127.4 / (sqrt(6.966e7 / rows) + 120),
 #                              # with 6.966e7 = m (n + 1) k R / n from m = 387 output tokens a turn, n = 4 streams,

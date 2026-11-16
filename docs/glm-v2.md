@@ -434,3 +434,38 @@ Two things are still open, and the logs the pair now collects are what will clos
 should stop buying decode time (the floor is set to 0.645, which assumes a decoder at ~50 tok/s, but the
 four-stream aggregate is 81 and the linear law only fits 0.68..1, so the true knee is likely lower), and
 how much of a long fill's cost is linear in rows at all.
+
+## 14. The share below 0.84 does not pay (measured 2026-11-16, two hours of real traffic)
+
+Section 13's curve was deployed with a floor of 0.645 and a ceiling of 0.95, and the pair ran two
+windows of real agent traffic: A with the flat 0.84 share (11:48-13:31, 258 turns), B with the ramp
+(13:43-15:50, 290 turns, after the memory split had settled at the same 24 GiB). Warm turns only
+(refill <= 20k), by how many streams were decoding at the same time:
+
+| streams | A: flat 0.84 | B: ramp | delta |
+|---|---|---|---|
+| 0 | 48.8 tok/s | 44.6 | -8.5% |
+| 1 | 31.9 | 32.9 | +3.3% |
+| 2 | 25.9 | 23.4 | -9.7% |
+| 3+ | 18.2 | 17.1 | -5.8% |
+
+| refill | A: median TTFT | B: median TTFT |
+|---|---|---|
+| < 1k | 1.22 s | 2.06 s |
+| 1-5k | 2.98 s | 3.72 s |
+| 5-20k | 5.57 s | 11.01 s |
+
+Throughput did not move (25,371 refill and 1,609 output tok/min in A; 25,921 and 1,648 in B), which
+is what the derivation predicted. What it did not predict is the other half: lowering the share spent
+the fill's wall time and bought the decoders nothing. The reason is the one flagged in section 13 --
+the linear law was fitted on 0.68..1.0 and 0.645 is outside it -- and it is backed by the stream count:
+a decode round costs what it costs per stream (44 - 9n tok/s for n streams, measured), so handing the
+fill less wall time is not the same as handing the decoders more rounds.
+
+**What ships**: the floor stays at the flat share, so the curve can only ever give a fill *more* than
+0.84 (fills above ~69k rows with the measured constant, or ~275k in the image built before it), never
+less. `PREFILL_SHARE_SHORT=0.84 PREFILL_SHARE_BIG=0.95`.
+
+**What would settle it**: a share read at run time rather than at startup, so one restart can sweep p
+across [0.5, 1.0] and be measured, instead of inferring a curve from three bench points. Until then the
+engine's own default (no bands, one share) is the honest setting.
