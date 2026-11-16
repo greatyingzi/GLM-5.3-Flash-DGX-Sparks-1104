@@ -1,0 +1,32 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+Subject: [PATCH] rows store: TF_ROWS_STAGING_GIB sizes the disk learn staging buffer
+
+The engine 1 GiB staging fits a ~170k-token GLM conversation state; a 400k-token
+one is ~2.5 GiB and skipped with StagingFull, never reaching the disk. One env
+read at attach time instead of new plumbing through every backend options:
+unset, empty or non-numeric keeps 1 GiB; a value clamps to [1, 64] GiB.
+---
+ zig/src/core/rows_store.zig | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+--- a/zig/src/core/rows_store.zig
++++ b/zig/src/core/rows_store.zig
+@@ -124,8 +124,17 @@
+         try r.scan();
+         r.settle();
+         r.stamp();
+         r.sync_writes = o.sync_writes or (if (platform.c.getenv("TENSORFOLD_ROWS_SYNC")) |v| std.mem.eql(u8, std.mem.span(v), "1") else false);
+-        r.staging_bytes = o.staging_bytes;
++        // TF_ROWS_STAGING_GIB: the writes' staging buffer a store holds between
++        // steps. The engine's 1 GiB default fits a ~170k-token GLM state; larger
++        // conversations skipped with StagingFull and never reached the disk.
++        if (platform.c.getenv("TF_ROWS_STAGING_GIB")) |text| {
++            const trimmed = std.mem.trim(u8, std.mem.span(text), "\t");
++            if (trimmed.len > 0 and trimmed[0] >= '0' and trimmed[0] <= '9') {
++                const gibs = std.fmt.parseFloat(f64, trimmed) catch 0;
++                if (gibs >= 1 and gibs <= 64) r.staging_bytes = @intFromFloat(gibs * (1 << 30));
++            }
++        } else r.staging_bytes = o.staging_bytes;
+         r.next_job = @truncate(@as(u128, @intCast(write.nowNs())));
+         r.verify = if (platform.c.getenv("TF_IMPRINT_VERIFY")) |v| v[0] == '1' else false;
+         return r;
