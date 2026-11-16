@@ -31,11 +31,13 @@ HOST_CACHE_GIB=0              # the pinned host prompt tier is the same memory a
 # PROMPT_CACHE_GIB=5          # device pages for kept prompt states, set aside first (CACHE_FIRST=1, the default)
 # PROMPT_CACHE_TRACE=1         # 0124: log every prompt state an eviction gives up (position, MiB, held MiB)
 # PREFILL_SHARE=0.84           # 0125: the share of wall time a prompt step takes beside decoding streams
-# PREFILL_SHARE_BIG=0.94       # 0125: a fill with PREFILL_BIG_ROWS or more rows left takes this share instead
-# PREFILL_BIG_ROWS=65536
-# PREFILL_SHARE_SHORT=0.62     # 0125: a fill under PREFILL_SHORT_ROWS left takes this share (it costs decoders
-#                              #       less than its own extra wall time), a tool result usually lands here
-# PREFILL_SHORT_ROWS=4096
+# PREFILL_SHARE_SHORT=0.645    # 0125: the floor -- the curve clamps here. It is provisional: the decoders cannot
+#                              #       beat their own aggregate (81 tok/s at 4 streams, 95 at 8, 44 at 1) and the
+#                              #       linear law only fits 0.68..1, so the logs are what will place it
+# PREFILL_SHARE_BIG=0.95       # 0125: the ceiling, so a cold 500k fill never starves the batch outright
+#                              # 0125 fits the curve to the agent loop: p = 127.4 / (sqrt(6.966e7 / rows) + 120),
+#                              # with 6.966e7 = m (n + 1) k R / n from m = 387 output tokens a turn, n = 4 streams,
+#                              # k = 120, R = 1,200 prompt tok/s. Fills of 40k rows take 0.79, 100k 0.87, 300k+ 0.95
 # GLM_LOG_MAX_MIB=64           # start.sh: docker json log per rank, 4 files (0: Docker's uncapped default)
 # THINKING=1
 # VISION=0
