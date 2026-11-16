@@ -3,3 +3,9 @@
 /.env
 /scripts/local.sh
 /HANDOFF.md
+
+# Hand-made backups of the two scripts above, and the benchmark/profiler output in docs/speed:
+# both are machine-local, and the history already holds what they were copied from (2026-11-16).
+*.bak-*
+/docs/speed/*.json
+/docs/speed/prof*.log
