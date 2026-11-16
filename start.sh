@@ -168,6 +168,7 @@ build_serve_args() {
   # LEARN_GIB: engine patch 0113 keeps the prompt states on disk too (rank 0's CACHE_DIR/learn holds every rank's part)
   [[ "$LEARN_GIB" == 0 ]] || SERVE_ARGS+=(--learn-conversations --learn-dir /state/learn --learn-gib "$LEARN_GIB"
     --learn-min-free-gib "$LEARN_MIN_FREE_GIB")
+  [[ -z "${LEARN_DAILY_GIB:-}" ]] || SERVE_ARGS+=(--learn-daily-gib "$LEARN_DAILY_GIB")
   read -r -a extra <<< "$SERVE_EXTRA_ARGS"
   SERVE_ARGS+=("${extra[@]}")
 }
@@ -178,9 +179,19 @@ declare -a PASS_ENV=()
 WORKER_ENV_FILE=''
 MANAGED_ENV=' HOME HF_HUB_OFFLINE CUDA_DEVICE_ORDER CUDA_VISIBLE_DEVICES TENSORFOLD_NO_UPDATE_CHECK TENSORFOLD_NO_LIVE
  TENSORFOLD_MEMORY_RESERVE_GIB TF_GLM_DENSE_BITS TF_GLM_HEAD_BITS TF_GLM_CLEAR_THINKING TF_GLM_RANK TF_GLM_WORLD TF_CUDA_DEVICE
- TF_KV_PAGES TF_GLM_CE_EXCHANGE TF_GLM_ABSORB_MMA TF_GLM_W8A8 TF_GLM_HOST_CACHE_GIB TENSORFOLD_PREFILL_SHARE TENSORFOLD_PREFILL_BUDGET TF_PROMPT_CACHE_FIRST TF_GLM_KV_SHARD TF_GLM_L2PF TF_EXTRA_EOS TF_THINK_OFF_SPLIT
- TF_ROCE TF_ROCE_MAX_KB TF_ROCE_HCA TF_BIN TF_REPO TF_REF
+ TF_KV_PAGES TF_GLM_CE_EXCHANGE TF_GLM_ABSORB_MMA TF_GLM_W8A8 TF_GLM_HOST_CACHE_GIB TENSORFOLD_PREFILL_SHARE TENSORFOLD_PREFILL_BUDGET TF_PROMPT_CACHE_FIRST TF_GLM_KV_SHARD TF_GLM_L2PF TF_ROWS_STAGING_GIB TF_EXTRA_EOS TF_THINK_OFF_SPLIT
+ TF_ROCE TF_ROCE_MAX_KB TF_ROCE_HCA TF_BIN TF_REPO TF_REF TENSORFOLD_PROMPT_CACHE_KEEP_OTHERS TF_GLM_PREFILL_SHARE_BIG TF_GLM_PREFILL_BIG_ROWS TF_GLM_PREFILL_SHARE_SHORT TF_GLM_PREFILL_SHORT_ROWS
+
+    TENSORFOLD_PROMPT_CACHE_TRACE
  NCCL_COMM_ID NCCL_SOCKET_IFNAME NCCL_IB_HCA NCCL_IB_GID_INDEX NCCL_MIN_NCHANNELS NCCL_MAX_NCHANNELS '
+
+# Docker's json-file log has no cap by default: ~27 MB an hour of request lines on a busy
+# afternoon and nothing ever rotates it. 64 MiB x 4 keeps 256 MiB a rank; every line worth
+# analysing already lands in /home/leon/glm-logs with its timestamp. GLM_LOG_MAX_MIB=0 turns
+# the cap off.
+LOG_MAX_MIB="${GLM_LOG_MAX_MIB:-64}"
+LOG_OPTS=()
+[[ "$LOG_MAX_MIB" == 0 ]] || LOG_OPTS=(--log-opt "max-size=${LOG_MAX_MIB}m" --log-opt max-file=4)
 # The flags both ranks share. Everything that places a rank is added per rank, so the two fingerprints agree on the rest.
 build_env_args() {
   local key
@@ -195,8 +206,17 @@ build_env_args() {
   [[ -z "$PREFILL_BUDGET" ]] || ENV_ARGS+=(-e "TENSORFOLD_PREFILL_BUDGET=$PREFILL_BUDGET")
   # CACHE_FIRST=1: engine patch 0112 sets PROMPT_CACHE_GIB aside before the streams' windows (both ranks alike)
   [[ "$CACHE_FIRST" != 1 ]] || ENV_ARGS+=(-e "TF_PROMPT_CACHE_FIRST=1")
+  [[ "${PROMPT_CACHE_KEEP_OTHERS:-0}" != 1 ]] || ENV_ARGS+=(-e "TENSORFOLD_PROMPT_CACHE_KEEP_OTHERS=1")
+  # 0124: name every state an eviction gives up, so a refill's cause is on the log.
+  [[ -z "${PROMPT_CACHE_TRACE:-}" ]] || ENV_ARGS+=(-e "TENSORFOLD_PROMPT_CACHE_TRACE=$PROMPT_CACHE_TRACE")
+  # 0125: the share a fill of this size deserves (a big refill ends sooner, a small one costs decoders less).
+  [[ -z "${PREFILL_SHARE_BIG:-}" ]] || ENV_ARGS+=(-e "TF_GLM_PREFILL_SHARE_BIG=$PREFILL_SHARE_BIG")
+  [[ -z "${PREFILL_BIG_ROWS:-}" ]] || ENV_ARGS+=(-e "TF_GLM_PREFILL_BIG_ROWS=$PREFILL_BIG_ROWS")
+  [[ -z "${PREFILL_SHARE_SHORT:-}" ]] || ENV_ARGS+=(-e "TF_GLM_PREFILL_SHARE_SHORT=$PREFILL_SHARE_SHORT")
+  [[ -z "${PREFILL_SHORT_ROWS:-}" ]] || ENV_ARGS+=(-e "TF_GLM_PREFILL_SHORT_ROWS=$PREFILL_SHORT_ROWS")
   # KV_SHARD=1: engine patch 0114 keeps each stream's latent rows on its owner rank (both ranks must agree)
   [[ "$KV_SHARD" != 1 ]] || ENV_ARGS+=(-e "TF_GLM_KV_SHARD=1")
+  [[ -z "${ROWS_STAGING_GIB:-}" ]] || ENV_ARGS+=(-e "TF_ROWS_STAGING_GIB=$ROWS_STAGING_GIB")
   # L2PF=1: engine patch 0117 prefetches each decode window's next weights into L2 (both ranks must agree)
   [[ "$L2PF" != 1 ]] || ENV_ARGS+=(-e "TF_GLM_L2PF=1")
   # EXTRA_EOS: engine patch 0120 ends a reply at these tokens too (both ranks alike)
@@ -378,7 +398,7 @@ launch() {
     [[ "$a" == *=* ]] && worker_env+=(-e "$a")
   done
   [[ -z "$WORKER_ENV_FILE" ]] || worker_env+=(--env-file "$WORKER_ENV_FILE")
-  wcmd=(docker run -d --name "$CONTAINER_NAME" --label tf.recipe=glm53-spark --label "tf.patches=$PATCHES_HASH"
+  wcmd=(docker run -d --name "$CONTAINER_NAME" --label tf.recipe=glm53-spark --label "tf.patches=$PATCHES_HASH" "${LOG_OPTS[@]}"
     --init --restart=no "${RUN_ARGS[@]}" "${worker_user_args[@]}" "${worker_env[@]}" "${RANK_ENV[@]}"
     "${WORKER_MOUNTS[@]}" -v "$WORKER_CACHE_DIR:/state")
   [[ -z "$TEMPLATE_FILE" ]] || wcmd+=(-v "$WORKER_TEMPLATE:/templates/chat_template.jinja:ro")
@@ -397,7 +417,7 @@ launch() {
   [[ "$DRAFTER" != dflash2 ]] || mounts+=(-v "$DFLASH2_DIR:/dflash2:ro")
   [[ -z "$TEMPLATE_FILE" ]] || mounts+=(-v "$TEMPLATE_FILE:/templates/chat_template.jinja:ro")
   mounts+=(-v "$CACHE_DIR:/state")
-  cmd=(docker run -d --name "$CONTAINER_NAME" --label tf.recipe=glm53-spark --label "tf.patches=$PATCHES_HASH"
+  cmd=(docker run -d --name "$CONTAINER_NAME" --label tf.recipe=glm53-spark --label "tf.patches=$PATCHES_HASH" "${LOG_OPTS[@]}"
     --init --restart=no "${RUN_ARGS[@]}" "${user_args[@]}" "${ENV_ARGS[@]}" "${RANK_ENV[@]}" "${mounts[@]}"
     --entrypoint "$TF_BIN" "$IMAGE" serve /model "${SERVE_ARGS[@]}")
   if [[ "$DRY_RUN" == 1 ]]; then log 'Here:'; plan "${cmd[@]}"; return 0; fi
