@@ -469,3 +469,33 @@ less. `PREFILL_SHARE_SHORT=0.84 PREFILL_SHARE_BIG=0.95`.
 **What would settle it**: a share read at run time rather than at startup, so one restart can sweep p
 across [0.5, 1.0] and be measured, instead of inferring a curve from three bench points. Until then the
 engine's own default (no bands, one share) is the honest setting.
+
+## 15. 救援通道与开机自启（2026-11-16，事故当天补上）
+
+11-16 那天 spark-00 两次卡在「内核活着、sshd 接得住 TCP、但 fork 不出会话」的状态：LAN、tailscale、CX7
+三条路的 SSH 全部 banner 超时。没有 BMC、没有 PDU、没有串口，**唯一的恢复手段是人走到机器旁边断电**。
+spark-01 能以 0.06 ms 访问它，却没有钥匙，帮不上忙。
+
+两个补丁把这条路补上：
+
+**① `scripts/dgx-rescue.sh`**：spark-01 唯一能在 spark-00 上执行的东西。装在
+`~leon/.ssh/authorized_keys` 里作为 forced command（`command=...,no-pty,no-port-forwarding`），
+所以那把钥匙除了下面五个动作什么也做不了：
+
+| 请求 | 作用 |
+|---|---|
+| `status` | 主机、可用内存、引擎状态、health、SSH 连接数 |
+| `stop` | 停引擎（docker rm -f） |
+| `start` | 起引擎（走自启单元） |
+| `reboot` | `systemctl reboot -f` |
+| `hard-reboot` | `sysrq-b`，绕过 systemd 的硬复位 |
+
+用法（在 spark-01 上）：`ssh -i ~/.ssh/rescue-00 leon@10.0.0.1 status`。拿 shell 会被拒绝
+（`unknown request: id`），这是设计如此。
+
+**② `scripts/glm53-autostart.service`**：开机后自动起引擎一次。单元里先看容器在不在，在就退出，
+所以不会和人工 `start.sh` 或 stack-guard 抢；`start.sh` 自己的锁再兜一层。整机重启后服务自己回来，
+不再需要人跑 `start.sh`。实测：容器在跑时 `systemctl start glm53-autostart` 立即 `success` 退出。
+
+**权威的实测证据**：这台 DGX 的 `vm.watermark_scale_factor` 默认就是 200，不是被调过；
+真正要回退的只有 `vm.min_free_kbytes`（1 GiB 是原值，4 GiB 会导致引擎加载时陷入回收风暴）。

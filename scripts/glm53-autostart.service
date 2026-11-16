@@ -1,0 +1,17 @@
+[Unit]
+Description=GLM-5.3 TensorFold engine, started once after a boot
+After=docker.service network-online.target
+Wants=docker.service network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=leon
+Environment=HOME=/home/leon
+WorkingDirectory=/home/leon/NewModels/GLM-5.3-Flash-DGX-Sparks-1104
+ExecStart=/usr/local/sbin/glm53-autostart.sh
+# start.sh has its own lock; a second invoke waits rather than fighting.
+TimeoutStartSec=900
+
+[Install]
+WantedBy=multi-user.target
