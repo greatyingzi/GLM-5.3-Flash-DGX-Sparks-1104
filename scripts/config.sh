@@ -243,6 +243,10 @@ LEARN_GIB="${LEARN_GIB:-0}"
 # --learn-daily-gib: bytes the learn store may write a day (engine default 32 GiB). A 400k state
 # is ~2.5 GiB, and a restart rewrites what the day has already lost, so 32 GiB is reached fast.
 LEARN_DAILY_GIB="${LEARN_DAILY_GIB:-}"
+# TF_LEARN_MIN_TOKENS (engine patch 0126): a state shorter than this many tokens is not written to disk at all.
+# A 16k-token state costs ~130 MiB and saves ~13 s of refill; a 500k one costs 4 GiB and saves 750 s. Empty or 0:
+# every state is written, as before.
+LEARN_MIN_TOKENS="${LEARN_MIN_TOKENS:-}"
 LEARN_MIN_FREE_GIB="${LEARN_MIN_FREE_GIB:-15}"
 # KV_SHARD=1 (engine patch 0114, TF_GLM_KV_SHARD): each stream's FP8 latent rows live on one Spark (its owner) instead
 # of both, so the same memory holds about twice the tokens; the other Spark's queries go to the owner for attention

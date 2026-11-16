@@ -169,6 +169,9 @@ build_serve_args() {
   [[ "$LEARN_GIB" == 0 ]] || SERVE_ARGS+=(--learn-conversations --learn-dir /state/learn --learn-gib "$LEARN_GIB"
     --learn-min-free-gib "$LEARN_MIN_FREE_GIB")
   [[ -z "${LEARN_DAILY_GIB:-}" ]] || SERVE_ARGS+=(--learn-daily-gib "$LEARN_DAILY_GIB")
+  # 0126: a state shorter than LEARN_MIN_TOKENS is never written -- a 16k one saves ~13 s and spends the
+  # budget a 500k one (750 s) needs. Env, not a flag: rows_store reads it where the store opens.
+  [[ -z "${LEARN_MIN_TOKENS:-}" ]] || ENV_ARGS+=(-e "TF_LEARN_MIN_TOKENS=$LEARN_MIN_TOKENS")
   read -r -a extra <<< "$SERVE_EXTRA_ARGS"
   SERVE_ARGS+=("${extra[@]}")
 }

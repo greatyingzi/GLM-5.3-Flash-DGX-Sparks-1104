@@ -1,0 +1,61 @@
+diff --git a/zig/src/core/rows_store.zig b/zig/src/core/rows_store.zig
+index c739b74..d435109 100644
+--- a/zig/src/core/rows_store.zig
++++ b/zig/src/core/rows_store.zig
+@@ -66,6 +66,7 @@ pub const Options = struct {
+     sync_writes: bool = false,
+     staging_bytes: u64 = 1 << 30,
+     slots: ?usize = null, // --checkpoint-slots: the RAM store's states at most, beside this one (null: the family's)
++    min_tokens: u32 = 0, // TF_LEARN_MIN_TOKENS: a state this short is not written (0: every state is)
+ };
+ 
+ /// The store under `o`, the RAM store's disk: `o.slots` bounds what it keeps in RAM.
+@@ -108,6 +109,7 @@ pub const Rows = struct {
+     file_io: file.IO = .{},
+     worker: ?*write.io.Worker = null,
+     staging_bytes: u64 = 1 << 30,
++    min_tokens: u32 = 0, // TF_LEARN_MIN_TOKENS: shorter states are not written at all
+     sync_writes: bool = false,
+     stopped: bool = false,
+     flush_clock: ?u64 = null, // a close protects states touched after this clock from older queued saves
+@@ -134,6 +136,13 @@ pub const Rows = struct {
+                 const gibs = std.fmt.parseFloat(f64, trimmed) catch 0;
+                 if (gibs >= 1 and gibs <= 64) r.staging_bytes = @intFromFloat(gibs * (1 << 30));
+             }
++        }
++        // TF_LEARN_MIN_TOKENS: a state shorter than this is never written. A 16k-token state costs ~130 MiB and
++        // saves ~13 s; a 500k one costs 4 GiB and saves 750 s. Without the cut the small ones spend the daily
++        // budget and the cap that the long states need to survive a restart.
++        if (platform.c.getenv("TF_LEARN_MIN_TOKENS")) |text| {
++            const t = std.mem.trim(u8, std.mem.span(text), " \t");
++            if (t.len > 0 and t[0] >= '0' and t[0] <= '9') r.min_tokens = std.fmt.parseInt(u32, t, 10) catch r.min_tokens;
+         } else r.staging_bytes = o.staging_bytes;
+         r.next_job = @truncate(@as(u128, @intCast(write.nowNs())));
+         r.verify = if (platform.c.getenv("TF_IMPRINT_VERIFY")) |v| v[0] == '1' else false;
+@@ -151,7 +160,7 @@ pub const Rows = struct {
+         const root = try gpa.dupe(u8, o.root);
+         errdefer gpa.free(root);
+         const dir = try std.fmt.allocPrintSentinel(gpa, "{s}/{x:0>16}", .{ o.root, id }, 0);
+-        r.* = .{ .gpa = gpa, .family = family, .img = img, .root = root, .dir = dir, .keying = .{ .identity = id, .block = block_tokens, .lookahead = o.lookahead, .planned = o.planned }, .grid = o.grid, .cap = o.cap, .daily = o.daily, .admission = .{ .floor = o.floor }, .spill = o.spill };
++        r.* = .{ .gpa = gpa, .family = family, .img = img, .root = root, .dir = dir, .keying = .{ .identity = id, .block = block_tokens, .lookahead = o.lookahead, .planned = o.planned }, .grid = o.grid, .cap = o.cap, .daily = o.daily, .admission = .{ .floor = o.floor }, .spill = o.spill, .min_tokens = o.min_tokens };
+         return r;
+     }
+ 
+diff --git a/zig/src/core/rows_write_sync.zig b/zig/src/core/rows_write_sync.zig
+index f6c4b39..429f5ea 100644
+--- a/zig/src/core/rows_write_sync.zig
++++ b/zig/src/core/rows_write_sync.zig
+@@ -43,6 +43,13 @@ pub const Job = struct {
+ 
+ /// A newly kept entry joins the queue (the RAM store calls this on every new keep), with the request's chunk starts.
+ pub fn queued(r: *Rows, e: *pc.Entry, starts: []const u32) void {
++    // TF_LEARN_MIN_TOKENS: a short state re-prefills in seconds, so writing it spends the daily budget and the
++    // store's room that a 500k state needs to survive a restart (2026-11-16: 90 of 90 saves were refused with
++    // DailyBudgetSpent, the store sat at 117 of 120 GiB, and 15 cold refills cost 1,392 s of TTFT in two hours).
++    if (r.min_tokens > 0 and e.tokens.len < r.min_tokens) {
++        pc.note("imprint: saving {d} tokens skipped (TooSmall)", .{e.at});
++        return;
++    }
+     const own = rows_store.startsBelow(r, r.gpa, starts, e.at) catch return;
+     r.queue.append(r.gpa, .{ .entry = e, .starts = own }) catch r.gpa.free(own);
+ }

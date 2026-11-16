@@ -36,6 +36,12 @@ HOST_CACHE_GIB=0              # the pinned host prompt tier is the same memory a
 #                              #       section 14: TTFT +20..100%, throughput flat, per-stream rate -6..-10%).
 #                              #       At 0.84 the curve can only give a fill more, never less
 # PREFILL_SHARE_BIG=0.95       # 0125: the ceiling, so a cold 500k fill never starves the batch outright
+# LEARN_GIB=300                # 0113: disk the kept states may take. The store sat at 117 of 120 GiB and every
+#                              #       save was refused with DailyBudgetSpent: 15 cold refills cost 1,392 s of TTFT
+#                              #       in two hours, a fifth of the wall clock
+# LEARN_DAILY_GIB=256          # 0113: bytes a day. 64 GiB is ~15 long states, i.e. one restart's rewrite
+# LEARN_MIN_TOKENS=65536       # 0126: never write a state shorter than this. 16k tokens is ~130 MiB and ~13 s of
+#                              #       refill; 500k is 4 GiB and 750 s. Small ones were spending the budget
 #                              # 0125 fits the curve to the agent loop: p = 127.4 / (sqrt(6.966e7 / rows) + 120),
 #                              # with 6.966e7 = m (n + 1) k R / n from m = 387 output tokens a turn, n = 4 streams,
 #                              # k = 120, R = 1,200 prompt tok/s. Fills of 40k rows take 0.79, 100k 0.87, 300k+ 0.95
