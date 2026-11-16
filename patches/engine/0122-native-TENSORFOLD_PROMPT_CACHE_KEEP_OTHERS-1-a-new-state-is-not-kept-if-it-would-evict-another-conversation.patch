@@ -1,0 +1,153 @@
+diff --git a/zig/src/core/prompt_cache.zig b/zig/src/core/prompt_cache.zig
+index 252b90c..98ba3d8 100644
+--- a/zig/src/core/prompt_cache.zig
++++ b/zig/src/core/prompt_cache.zig
+@@ -154,6 +154,7 @@ pub const Store = struct {
+     active_rewind_at: u32 = 0, // the last lookup's rewind state (0: none); hosts keep a pass's states before the next lookup
+     links_lost: bool = false, // an allocation failure left the extension links incomplete: `extended` scans
+     hold: bool = false, // memory pressure: lookups plan no marks and keeps refuse, so no new state is kept
++    keep_others: bool = false, // a new state may evict only its own conversation's states (prompt_cache_others.zig)
+ 
+     repeat_log: @import("prompt_cache_repeat.zig").Log = .{},
+     const SHARED_KEYS = 64;
+@@ -334,6 +335,7 @@ pub const Store = struct {
+ 
+     /// Room for every state the pass keeps, made before it: a peer that mirrors the keeps hears of these evictions with the request.
+     fn reserve(s: *Store, prompt: []const u32, born: u32, from: ?*Entry, marks_: []const u32, spans: []const modes.Span) void {
++        if (!s.keep_others) s.keep_others = others.fromEnv();
+         var need: u64 = 0;
+         var new: usize = 0; // states it keeps that the store lacks: a slot each
+         for (marks_) |at| {
+@@ -345,7 +347,7 @@ pub const Store = struct {
+             new += @intFromBool(!exists);
+         }
+         while (s.held + need > s.budget or s.entries.items.len + @min(new, s.most) > s.most) {
+-            const i = s.victimBut(from, prompt, born) orelse return;
++            const i = others.victimOr(s, from, prompt, born) orelse return;
+             s.remove(i);
+             s.counts.evicted += 1;
+         }
+@@ -458,6 +460,7 @@ pub const Store = struct {
+ 
+     /// `keep` as a prompt of `born` tokens: a reply's end and its warm pass supersede none of their request's states.
+     pub fn keepBorn(s: *Store, prompt: []const u32, born: u32, at: u32, owner: ?*anyopaque, starts: []const u32, spans: []const modes.Span) bool {
++        if (!s.keep_others) s.keep_others = others.fromEnv(); // TENSORFOLD_PROMPT_CACHE_KEEP_OTHERS=1
+         s.collectExpired();
+         const n = @as(usize, at) + s.rules.lookahead;
+         if (at == 0 or n > prompt.len or s.hold) return false;
+@@ -486,7 +489,7 @@ pub const Store = struct {
+                 if (s.family.vtable.trim) |f| f(s.family.ptr, s.budget -| s.held -| bytes); // spare that cannot take this state goes before any state
+                 if (s.spare() < free_) continue;
+             }
+-            s.remove(s.victimBut(null, prompt, born) orelse return s.fail(at, error.CacheBorrowed)); // its storage may come back spare and take this state
++            s.remove(others.victim(s, null, prompt, born, bytes, 1) orelse return if (s.keep_others) others.refuse(s, at, bytes) else s.fail(at, error.CacheBorrowed)); // its storage may come back spare and take this state
+             s.counts.evicted += 1;
+         }
+         if (s.entries.items.len == 0) if (s.family.vtable.trim) |f| f(s.family.ptr, s.budget -| bytes);
+@@ -523,8 +526,10 @@ pub const Store = struct {
+         const m = im.best(prompt, starts, s.rules.planned, if (have) |x| x.at else 0) orelse return have;
+         if (!modes.equal(&.{}, spans, m.at)) return have; // the request decodes rows the learned prompt pass prefilled
+         const bytes = s.family.vtable.bytes(s.family.ptr, m.at);
++        if (!s.keep_others) s.keep_others = others.fromEnv();
+         while (bytes <= s.budget and (s.held + s.spare() + bytes > s.budget or s.entries.items.len >= s.most)) {
+-            s.remove(s.victimBut(have, prompt, born) orelse return have);
++            const i = others.victimOr(s, have, prompt, born) orelse return have;
++            s.remove(i);
+             s.counts.evicted += 1;
+         }
+         if (bytes > s.budget) return have;
+@@ -569,6 +574,7 @@ pub const Store = struct {
+ 
+     /// The entry to free first, never `skip`: a superseded one, no branch point, oldest; else the oldest, rewind last.
+     pub const victimBut = policy.victimBut;
++    pub const others = @import("prompt_cache_others.zig");
+     const extended = policy.extended;
+ };
+ 
+diff --git a/zig/src/core/prompt_cache_others.zig b/zig/src/core/prompt_cache_others.zig
+new file mode 100644
+index 0000000..6f203a4
+--- /dev/null
++++ b/zig/src/core/prompt_cache_others.zig
+@@ -0,0 +1,48 @@
++//! TENSORFOLD_PROMPT_CACHE_KEEP_OTHERS=1: a new state that fits only by evicting another conversation's is not kept.
++const std = @import("std");
++const pc = @import("prompt_cache.zig");
++const policy = @import("prompt_cache_policy.zig");
++
++pub const name = "TENSORFOLD_PROMPT_CACHE_KEEP_OTHERS";
++
++/// Exactly 1 turns the rule on; unset, empty and 0 leave it off.
++pub fn wanted(raw: ?[]const u8) bool {
++    return std.mem.eql(u8, raw orelse "", "1");
++}
++
++/// The switch as the environment resolves it (0112 reads its own the same way).
++pub fn fromEnv() bool {
++    const v = std.c.getenv(name) orelse return false;
++    return wanted(std.mem.span(v));
++}
++
++/// Whether bytes more in new more states fit beside what other conversations' states leave (spare storage counts free).
++pub fn fits(s: *const pc.Store, skip: ?*pc.Entry, prompt: []const u32, bytes: u64, new: usize) bool {
++    var freed: u64 = 0;
++    var n: usize = 0;
++    for (s.entries.items) |e| if (policy.own(e, skip, prompt)) {
++        freed += e.bytes;
++        n += 1;
++    };
++    return (s.held -| freed) + s.spare() + bytes <= s.budget and s.entries.items.len - n + new <= s.most;
++}
++
++/// The state to free where the caller re-checks the room itself: only an own state when the rule is on.
++pub fn victimOr(s: *const pc.Store, skip: ?*pc.Entry, prompt: []const u32, born: u32) ?usize {
++    if (!s.keep_others) return policy.victimBut(s, skip, prompt, born);
++    return policy.victimIn(s, skip, prompt, born, true);
++}
++
++/// The state to free for a new one: victimBut's when off; when on, only an own state, and none unless the new fits.
++pub fn victim(s: *const pc.Store, skip: ?*pc.Entry, prompt: []const u32, born: u32, bytes: u64, new: usize) ?usize {
++    if (!s.keep_others) return policy.victimBut(s, skip, prompt, born);
++    if (!fits(s, skip, prompt, bytes, new)) return null;
++    return policy.victimIn(s, skip, prompt, born, true);
++}
++
++/// A state the rule keeps out, counted as refused, with one line naming its size and what no kept state holds.
++pub fn refuse(s: *pc.Store, at: u32, bytes: u64) bool {
++    s.counts.refused += 1;
++    pc.note("kept nothing at {d} tokens: {d} MiB does not fit beside {d} kept states; {d} MiB of the {d} MiB budget free ({s}=1)", .{ at, bytes >> 20, s.entries.items.len, (s.budget -| s.held) >> 20, s.budget >> 20, name });
++    return false;
++}
+diff --git a/zig/src/core/prompt_cache_policy.zig b/zig/src/core/prompt_cache_policy.zig
+index 745b64b..eaa5670 100644
+--- a/zig/src/core/prompt_cache_policy.zig
++++ b/zig/src/core/prompt_cache_policy.zig
+@@ -3,12 +3,18 @@ const std = @import("std");
+ const pc = @import("prompt_cache.zig");
+ 
+ pub fn victimBut(s: *const pc.Store, skip: ?*pc.Entry, prompt: []const u32, born: u32) ?usize {
++    return victimIn(s, skip, prompt, born, false);
++}
++
++/// victimBut's order over every state, or with own_only over the prompt's own conversation's states alone.
++pub fn victimIn(s: *const pc.Store, skip: ?*pc.Entry, prompt: []const u32, born: u32, own_only: bool) ?usize {
+     var best: ?usize = null;
+     var oldest: ?usize = null;
+     var oldest_rewind = false;
+     for (s.entries.items, 0..) |e, i| { // one prefix compare an entry: the superseded scan and the oldest scan share it
+         const on = e.tokens.len <= prompt.len and std.mem.eql(u32, prompt[0..e.tokens.len], e.tokens);
+         const rewind = !e.expired and e.at == s.active_rewind_at and on; // the active rewind state goes last
++        if (own_only and !own(e, skip, prompt)) continue;
+         if (e.borrowers == 0 and e != skip and (oldest == null or (if (rewind != oldest_rewind) oldest_rewind else e.used < s.entries.items[oldest.?].used))) {
+             oldest = i;
+             oldest_rewind = rewind;
+@@ -52,3 +58,9 @@ pub fn unlink(s: *pc.Store, x: *pc.Entry) void {
+         _ = o.ext.swapRemove(i);
+     };
+ }
++
++/// A state of the prompt's own conversation that may go: unborrowed, on its token path, neither shared nor a branch.
++pub fn own(e: *pc.Entry, skip: ?*pc.Entry, prompt: []const u32) bool {
++    if (e.borrowers > 0 or e == skip or e.shared or e.branched or e.tokens.len > prompt.len) return false;
++    return std.mem.eql(u32, prompt[0..e.tokens.len], e.tokens);
++}
