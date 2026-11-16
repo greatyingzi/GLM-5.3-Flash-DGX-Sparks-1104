@@ -402,3 +402,35 @@ everything decode-side.
 
 *No code, configuration, or production state was changed in producing this report. Files read outside this
 repository (the `opt-sm120-notes` notes) were opened read-only via shell, as the handoff directs.*
+
+## 13. Measured 2026-11-16: the prompt/decode split, on real traffic
+
+D6's three points were taken on a bench. Two things measured since then change how the knob should be
+set, and both come from the deployed pair's own logs (`/home/leon/glm-logs`, 216-239 real requests).
+
+- **The D6 numbers are aggregates, not per stream.** A decoder beside a fill cannot be faster than the
+  same batch with no fill at all, and the no-fill aggregate is 43.7 tok/s for one stream, 81.4 for four,
+  95.3 for eight. Read per stream, D6's "p=0.84 -> 25.4" would exceed the four-stream no-fill rate of
+  20.4, so 7.4 / 25.4 / 45.8 are what the batch as a whole sees.
+
+- **Prompt throughput is ~1,200 tok/s, not 4,760.** `refill / ttft` over the real requests: 921 tok/s mean
+  under 6k rows (n=202), 999 at 90k, 1,147-1,153 at 213k, 1,344-1,519 at 226k, and 713 for one 546k turn
+  that took 765.8 s. The cost of a fill is thus four times what a 128k-in-26.9-s figure suggests, and it
+  grows with length.
+
+That gives the size-dependent share patch 0125 carries. What a decoder's rate is worth is not the tokens
+it makes but how soon the stream reaches the stop that ends its request and gives the card back, so the
+cost of a share p is the fill's wall time plus the time every stream in the batch needs to reach its own
+stop (m = 387 output tokens a turn, measured: 216 requests, every one `finish=stop`):
+
+    J(p) = C/p + m (n + 1) / (n rate(p)),   rate(p) = b + k (1 - p),   C = rows / R
+    p* = (b + k) / (sqrt(m (n + 1) k R / (n rows)) + k) = 127.4 / (sqrt(6.966e7 / rows) + 120)
+
+| rows | 40k | 100k | 271k | 300k+ |
+|---|---|---|---|---|
+| p* | 0.79 | 0.87 | 0.93 | 0.95 (ceiling) |
+
+Two things are still open, and the logs the pair now collects are what will close them: where the curve
+should stop buying decode time (the floor is set to 0.645, which assumes a decoder at ~50 tok/s, but the
+four-stream aggregate is 81 and the linear law only fits 0.68..1, so the true knee is likely lower), and
+how much of a long fill's cost is linear in rows at all.
