@@ -1,0 +1,57 @@
+diff --git a/zig/src/core/lane_host.zig b/zig/src/core/lane_host.zig
+index 5ca02b9..fce9906 100644
+--- a/zig/src/core/lane_host.zig
++++ b/zig/src/core/lane_host.zig
+@@ -428,7 +428,7 @@ pub const LaneHost = struct {
+         rows_host.prefilled(h, job.request.prompt.len - job.stream.cached, done - began);
+         job.reported();
+         if (h.cache) |store| {
+-            store.report(job.request.prompt.len, job.stream.cached, store.counts.kept - job.kept0);
++            store.reportConv(job.request.prompt.len, job.stream.cached, store.counts.kept - job.kept0, Store.convOf(job.request.prompt));
+             if (job.request.images.len == 0 and job.request.cache_key.len == 0) store.repeat_log.note(store.gpa, store.rules.repeat_min, job.request.prompt);
+         }
+         emit(job, .{ .prefilled = job.stream.cached });
+diff --git a/zig/src/core/prompt_cache.zig b/zig/src/core/prompt_cache.zig
+index fc93beb..b28b7d2 100644
+--- a/zig/src/core/prompt_cache.zig
++++ b/zig/src/core/prompt_cache.zig
+@@ -577,8 +577,24 @@ pub const Store = struct {
+ 
+     /// One log line after a prompt pass: where it resumed, how many states it kept, and what the store holds.
+     pub fn report(s: *const Store, prompt: usize, from: u32, kept: u64) void {
++        reportConv(s, prompt, from, kept, 0);
++    }
++
++    /// A conversation's key: the first CONV_TOKENS of the prompt, hashed. Stable across the turns of one
++    /// conversation (they share the system prompt and the history so far) and different between conversations,
++    /// which the reply's sha cannot be -- it hashes the reply and changes every turn. Without it, "this state
++    /// was lost" and "this is another conversation that only shares the system prefix" look identical.
++    pub const CONV_TOKENS = 2048;
++    pub fn convOf(tokens: []const u32) u64 {
++        var h = std.hash.Wyhash.init(0);
++        const n = @min(tokens.len, CONV_TOKENS);
++        h.update(std.mem.sliceAsBytes(tokens[0..n]));
++        return h.final();
++    }
++
++    pub fn reportConv(s: *const Store, prompt: usize, from: u32, kept: u64, conv: u64) void {
+         if (@import("builtin").is_test) return;
+-        std.log.info("prompt cache: {d} tokens, resumed at {d}, kept {d}; {d} states, {d} MiB and {d} MiB spare of {d} MiB (hits {d}, misses {d}, evicted {d}, refused {d}, failed {d})", .{ prompt, from, kept, s.entries.items.len, s.held >> 20, s.spare() >> 20, s.budget >> 20, s.counts.hits, s.counts.misses, s.counts.evicted, s.counts.refused, s.counts.failed });
++        std.log.info("prompt cache: {d} tokens, resumed at {d}, kept {d}, conv={x:0>16}; {d} states, {d} MiB and {d} MiB spare of {d} MiB (hits {d}, misses {d}, evicted {d}, refused {d}, failed {d})", .{ prompt, from, kept, conv, s.entries.items.len, s.held >> 20, s.spare() >> 20, s.budget >> 20, s.counts.hits, s.counts.misses, s.counts.evicted, s.counts.refused, s.counts.failed });
+     }
+ 
+     fn fail(s: *Store, at: u32, err: anyerror) bool {
+diff --git a/zig/src/core/rows_write_sync.zig b/zig/src/core/rows_write_sync.zig
+index 429f5ea..3b4e305 100644
+--- a/zig/src/core/rows_write_sync.zig
++++ b/zig/src/core/rows_write_sync.zig
+@@ -72,6 +72,9 @@ pub fn pending(r: *const Rows) bool {
+ /// --spill-gib: an entry evicted from RAM is written now, unless the disk holds it already; the write under way first.
+ pub fn evicted(r: *Rows, e: *pc.Entry) void {
+     if (r.spill == .off) return;
++    // The same floor as queued(): a state this short is not worth the disk's write budget, whatever the reason
++    // it is leaving the device.
++    if (r.min_tokens > 0 and e.tokens.len < r.min_tokens) return;
+     if (r.job) |j| if (j.entry != e) while (r.job != null) {
+         _ = step(r);
+     };
