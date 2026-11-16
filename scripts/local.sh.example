@@ -29,6 +29,14 @@ DENSE=q8                      # bf16: the checkpoint's dense weights as stored (
 # MEMORY_RESERVE_GIB=6.5
 HOST_CACHE_GIB=0              # the pinned host prompt tier is the same memory as the KV pool here: keep it off
 # PROMPT_CACHE_GIB=5          # device pages for kept prompt states, set aside first (CACHE_FIRST=1, the default)
+# PROMPT_CACHE_TRACE=1         # 0124: log every prompt state an eviction gives up (position, MiB, held MiB)
+# PREFILL_SHARE=0.84           # 0125: the share of wall time a prompt step takes beside decoding streams
+# PREFILL_SHARE_BIG=0.94       # 0125: a fill with PREFILL_BIG_ROWS or more rows left takes this share instead
+# PREFILL_BIG_ROWS=65536
+# PREFILL_SHARE_SHORT=0.62     # 0125: a fill under PREFILL_SHORT_ROWS left takes this share (it costs decoders
+#                              #       less than its own extra wall time), a tool result usually lands here
+# PREFILL_SHORT_ROWS=4096
+# GLM_LOG_MAX_MIB=64           # start.sh: docker json log per rank, 4 files (0: Docker's uncapped default)
 # THINKING=1
 # VISION=0
 # SERVE_EXTRA_ARGS='--top-k 20'
