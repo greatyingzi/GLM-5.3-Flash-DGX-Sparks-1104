@@ -1,0 +1,33 @@
+diff --git a/zig/src/core/prompt_cache.zig b/zig/src/core/prompt_cache.zig
+index 98ba3d8..4f4ec0f 100644
+--- a/zig/src/core/prompt_cache.zig
++++ b/zig/src/core/prompt_cache.zig
+@@ -185,6 +185,8 @@ pub const Store = struct {
+ 
+     pub fn remove(s: *Store, i: usize) void {
+         std.debug.assert(s.entries.items[i].borrowers == 0);
++        const gone = s.entries.items[i];
++        if (policy.trace()) note("evicting {d} tokens, {d} MiB of {d} MiB held (used {d})", .{ gone.at, gone.bytes >> 20, s.held >> 20, gone.used });
+         index.remove(s, s.entries.items[i]);
+         const e = s.entries.orderedRemove(i);
+         policy.unlink(s, e);
+diff --git a/zig/src/core/prompt_cache_policy.zig b/zig/src/core/prompt_cache_policy.zig
+index eaa5670..3c3371a 100644
+--- a/zig/src/core/prompt_cache_policy.zig
++++ b/zig/src/core/prompt_cache_policy.zig
+@@ -64,3 +64,15 @@ pub fn own(e: *pc.Entry, skip: ?*pc.Entry, prompt: []const u32) bool {
+     if (e.borrowers > 0 or e == skip or e.shared or e.branched or e.tokens.len > prompt.len) return false;
+     return std.mem.eql(u32, prompt[0..e.tokens.len], e.tokens);
+ }
++
++/// TENSORFOLD_PROMPT_CACHE_TRACE=1 names every state an eviction gives up, so a refill's cause is on the log: which
++/// state left, its position and size, and what the store held at the time. Read once, on the first eviction.
++var trace_on: ?bool = null;
++
++pub fn trace() bool {
++    if (trace_on) |v| return v;
++    const raw = if (std.c.getenv("TENSORFOLD_PROMPT_CACHE_TRACE")) |v| std.mem.span(v) else "";
++    const v = std.mem.eql(u8, raw, "1");
++    trace_on = v;
++    return v;
++}
