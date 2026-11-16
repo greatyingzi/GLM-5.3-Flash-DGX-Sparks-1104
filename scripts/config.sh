@@ -254,8 +254,11 @@ PROMPT_CACHE_TTL_S="${PROMPT_CACHE_TTL_S:-}"
 LEARN_MIN_FREE_GIB="${LEARN_MIN_FREE_GIB:-15}"
 # SPILL_GIB (engine --spill-gib, beside --learn-conversations): switch the state store from write-through to
 # write-back. Unset/0 keeps the engine's default, which writes every kept state to disk as it is kept: a 500k
-# conversation then writes ~600 MiB a turn and burns the daily budget in hours. Set to the same GiB as LEARN_GIB
-# so the store has one cap; states are written when they are evicted (and at close), not before.
+# conversation then writes ~600 MiB a turn and burns the daily budget in hours.
+# GLM-5.3-Flash on CUDA REFUSES this flag: its disk store (cuda_glm_disk.attach) writes each rank's part between
+# passes and stages nothing at eviction, so the engine returns "GLM-5.3-Flash on CUDA keeps states on disk with
+# --learn-conversations alone". It is the right switch for every other family; for GLM it needs an engine change
+# (an evicted() that stages like rows_store) before it can be set here.
 SPILL_GIB="${SPILL_GIB:-}"
 # KV_SHARD=1 (engine patch 0114, TF_GLM_KV_SHARD): each stream's FP8 latent rows live on one Spark (its owner) instead
 # of both, so the same memory holds about twice the tokens; the other Spark's queries go to the owner for attention
